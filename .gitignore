@@ -1,0 +1,45 @@
+# Secrets and local environment (only .env.example is committed)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Generated files
+*.log
+locust_report*.html
+*.csv
+results/
+dump.rdb
+appendonly.aof
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.write_test
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Course source documents (contain personal details); kept locally only
+*.pptx
+*.docx

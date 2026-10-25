@@ -1,0 +1,6 @@
+﻿# Runtime dependencies (installed into the Docker image).
+# Tests, Locust and tooling are in requirements-dev.txt.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+redis>=5.0
+httpx>=0.27

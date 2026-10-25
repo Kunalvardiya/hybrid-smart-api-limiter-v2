@@ -1,0 +1,87 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (see README)}", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"   # reachable from this machine only
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # The protected demo API. Deliberately NOT published on the host: clients must go through the gateway.
+  backend:
+    build: .
+    command: ["uvicorn", "app.backend.main:app", "--host", "0.0.0.0", "--port", "9000"]
+    restart: on-failure
+
+  gateway:
+    build: .
+    command: ["uvicorn", "app.gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: on-failure
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      BACKEND_URL: http://backend:9000
+      BUCKET_CAPACITY: ${BUCKET_CAPACITY:-20}
+      BUCKET_REFILL_PER_SEC: ${BUCKET_REFILL_PER_SEC:-10}
+      RATE_LIMIT_FAIL_MODE: ${RATE_LIMIT_FAIL_MODE:-open}
+      REDIS_TIMEOUT_S: ${REDIS_TIMEOUT_S:-0.5}
+      REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-50}
+      TELEMETRY_STREAM_MAXLEN: ${TELEMETRY_STREAM_MAXLEN:-100000}
+      TELEMETRY_QUEUE_SIZE: ${TELEMETRY_QUEUE_SIZE:-10000}
+      TELEMETRY_TICK_S: ${TELEMETRY_TICK_S:-1}
+      ALLOWED_API_KEYS: ${ALLOWED_API_KEYS:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      POLICY_REFRESH_S: ${POLICY_REFRESH_S:-1}
+      POLICY_MAX_AGE_S: ${POLICY_MAX_AGE_S:-120}
+      POLICY_DWELL_BLOCKED_S: ${POLICY_DWELL_BLOCKED_S:-60}
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    restart: on-failure
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      BUCKET_REFILL_PER_SEC: ${BUCKET_REFILL_PER_SEC:-10}
+      SCORING_SPAN_S: ${SCORING_SPAN_S:-10}
+      SCORING_ALPHA: ${SCORING_ALPHA:-0.02}
+      SCORING_D_SATURATION: ${SCORING_D_SATURATION:-2.0}
+      SCORING_RATE_FLOOR: ${SCORING_RATE_FLOOR:-1.0}
+      SCORING_BURST_REF: ${SCORING_BURST_REF:-${BUCKET_REFILL_PER_SEC:-10}}
+      SCORING_C_FLOOR: ${SCORING_C_FLOOR:-0.5}
+      SCORING_MIN_REQUESTS_C: ${SCORING_MIN_REQUESTS_C:-10}
+      SCORING_MIN_REQUESTS_F: ${SCORING_MIN_REQUESTS_F:-5}
+      SCORING_WARMUP_EVALS: ${SCORING_WARMUP_EVALS:-30}
+      SCORING_BASELINE_MAX_RISK: ${SCORING_BASELINE_MAX_RISK:-20}
+      SCORING_GRACE_S: ${SCORING_GRACE_S:-2}
+      POLICY_ENTER_MONITORED: ${POLICY_ENTER_MONITORED:-25}
+      POLICY_ENTER_THROTTLED: ${POLICY_ENTER_THROTTLED:-50}
+      POLICY_ENTER_BLOCKED: ${POLICY_ENTER_BLOCKED:-75}
+      POLICY_HYSTERESIS: ${POLICY_HYSTERESIS:-5}
+      POLICY_DWELL_MONITORED_S: ${POLICY_DWELL_MONITORED_S:-10}
+      POLICY_DWELL_THROTTLED_S: ${POLICY_DWELL_THROTTLED_S:-30}
+      POLICY_DWELL_BLOCKED_S: ${POLICY_DWELL_BLOCKED_S:-60}
+      POLICY_THROTTLE_MULTIPLIER: ${POLICY_THROTTLE_MULTIPLIER:-0.25}
+    depends_on:
+      redis:
+        condition: service_healthy

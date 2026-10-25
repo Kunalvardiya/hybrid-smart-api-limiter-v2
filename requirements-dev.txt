@@ -1,0 +1,9 @@
+# Everything needed on your machine to run the tests, the Locust scenarios and the no-Docker stand-in.
+-r requirements.txt
+pytest>=8.0
+pytest-asyncio>=0.24
+pytest-timeout>=2.3
+fakeredis>=2.23      # in-memory Redis stand-in for tests and tools/dev_stack.py
+lupa>=2.0            # lets fakeredis run the token-bucket Lua script
+locust>=2.29
+python-dotenv>=1.0   # load/observe.py reads .env

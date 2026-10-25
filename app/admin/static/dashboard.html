@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hybrid Smart API Limiter</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1d2330; --muted:#667085; --card:#fff; --line:#dfe3ea;
+          --ok:#1a7f4b; --warn:#a15c00; --bad:#b42318; --accent:#2457c5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171f; --fg:#e6e9f0; --muted:#98a2b3; --card:#1d222d; --line:#2e3545;
+            --ok:#4cc38a; --warn:#f0b24a; --bad:#ff7a70; --accent:#7ba3ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; padding:12px 16px;
+           background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; flex:1 1 auto; }
+  main { padding:16px; max-width:1200px; margin:0 auto; display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
+  #app { display:grid; gap:16px; min-width:0; }
+  section { min-width:0; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  .card b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+  .card span { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th,td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  .scroll { overflow-x:auto; }
+  .pill { padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; border:1px solid currentColor; }
+  .NORMAL,.ok { color:var(--ok); } .MONITORED,.stale,.warn { color:var(--warn); }
+  .THROTTLED { color:#c2570c; } .BLOCKED,.bad,.down { color:var(--bad); } .unknown { color:var(--muted); }
+  .muted { color:var(--muted); } .note { font-size:12px; color:var(--muted); margin-top:6px; }
+  .banner { padding:8px 12px; border-radius:6px; border:1px solid var(--bad); color:var(--bad); display:none; }
+  .empty { color:var(--muted); padding:8px 0; }
+  #chart { display:flex; align-items:flex-end; gap:1px; height:70px; }
+  #chart div { flex:1 1 0; min-width:2px; display:flex; flex-direction:column-reverse; }
+  #chart i { display:block; } .seg-ok { background:var(--ok); } .seg-r { background:var(--bad); }
+  form { display:flex; gap:8px; flex-wrap:wrap; }
+  input { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); min-width:260px; }
+  button { padding:6px 12px; border-radius:6px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hybrid Smart API Limiter &mdash; monitor</h1>
+  <span id="updated" class="muted">not loaded</span>
+  <label class="muted">window
+    <select id="win"><option value="30">30 s</option><option value="60" selected>60 s</option><option value="300">5 min</option></select></label>
+  <button id="signout" type="button" style="display:none">Forget token</button>
+</header>
+<main>
+  <div id="banner" class="banner" role="alert"></div>
+
+  <section id="login" style="display:none">
+    <h2>Admin token required</h2>
+    <p id="loginmsg" class="muted"></p>
+    <form id="loginform"><input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off" required>
+      <button type="submit">Open dashboard</button></form>
+    <p class="note">The token is kept in this tab only (sessionStorage) and is sent in an <code>X-Admin-Token</code> header.</p>
+  </section>
+
+  <div id="app" style="display:none">
+  <section>
+    <h2>Health</h2>
+    <div class="cards" id="health"></div>
+  </section>
+
+  <section>
+    <h2>Requests &mdash; last <span class="winlabel">60</span> s <span class="muted">(derived from the telemetry stream)</span></h2>
+    <div class="cards" id="requests"></div>
+    <div id="chartwrap" style="margin-top:10px">
+      <div id="chart" aria-label="requests per second"></div>
+      <div class="note"><span style="color:var(--ok)">&#9632;</span> served &nbsp;
+        <span style="color:var(--bad)">&#9632;</span> throttled/blocked &nbsp; one bar per second, oldest on the left</div>
+    </div>
+    <div id="reqnote" class="note"></div>
+  </section>
+
+  <section>
+    <h2>Clients <span class="muted">(latest score per client; sorted by state, then score)</span></h2>
+    <div class="scroll"><table id="clients"></table></div>
+    <div id="clientsempty" class="empty" style="display:none">No client has been scored yet. Scores appear after the worker has seen about 10 seconds of traffic from a client.</div>
+    <div id="clientsnote" class="note"></div>
+  </section>
+
+  <section>
+    <h2>Policy updates <span class="muted">(state changes, newest first)</span></h2>
+    <div class="scroll"><table id="events"></table></div>
+    <div id="eventsempty" class="empty" style="display:none">No state changes yet.</div>
+  </section>
+  </div>
+  <p class="note">Request figures cover only the window shown and are read from the capped telemetry stream; they are not lifetime totals.
+    &ldquo;&mdash;&rdquo; means the backend has no value (for example F needs at least 5 upstream responses).</p>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (v, d = 2) => (v === null || v === undefined) ? "—" : (typeof v === "number" ? v.toFixed(d) : esc(v));
+const int = (v) => (v === null || v === undefined) ? "—" : v.toLocaleString();
+const KEY = "adminToken";
+let timer = null, lastOk = null;
+
+const getToken = () => { try { return sessionStorage.getItem(KEY) || ""; } catch (e) { return ""; } };
+const setToken = (t) => { try { t ? sessionStorage.setItem(KEY, t) : sessionStorage.removeItem(KEY); } catch (e) {} };
+
+function banner(msg) { const b = $("banner"); b.textContent = msg || ""; b.style.display = msg ? "block" : "none"; }
+function showLogin(msg) { $("login").style.display = "block"; $("app").style.display = "none";
+  $("loginmsg").textContent = msg || ""; $("signout").style.display = "none"; $("updated").textContent = "not signed in";
+  clearInterval(timer); timer = null; }
+function showApp() { $("login").style.display = "none"; $("app").style.display = "block"; $("signout").style.display = "inline-block"; }
+
+class AuthError extends Error {}
+async function api(path) {
+  let r;
+  try { r = await fetch(path, { headers: { "X-Admin-Token": getToken() }, cache: "no-store" }); }
+  catch (e) { throw new Error("cannot reach the gateway (" + e.message + ")"); }
+  if (r.status === 401) throw new AuthError("Wrong or missing token.");
+  if (r.status === 503) {
+    let d = ""; try { d = (await r.json()); } catch (e) {}
+    const detail = d.detail || d.error || "";
+    if (/admin API disabled/.test(detail)) throw new AuthError("The admin API is disabled on this gateway. Set ADMIN_TOKEN and restart it.");
+    throw new Error("backend error 503: " + detail);
+  }
+  if (!r.ok) throw new Error("backend error " + r.status);
+  return r.json();
+}
+
+const card = (value, label, cls) => `<div class="card"><b class="${cls || ""}">${value}</b><span>${esc(label)}</span></div>`;
+
+function renderHealth(h) {
+  const w = h.worker, s = h.stream, t = h.gateway.telemetry, p = h.gateway.policy_cache;
+  const wlabel = w.status === "ok" ? "running" : w.status === "stale" ? "stale (" + w.age_s + " s old)" : "no heartbeat";
+  $("health").innerHTML =
+    card(h.redis.ok ? "OK" : "DOWN", "Redis", h.redis.ok ? "ok" : "bad") +
+    card(esc(wlabel), "Worker" + (w.processed != null ? " · " + int(w.processed) + " events consumed" : ""), w.status) +
+    card(int(s.length), "telemetry stream length") +
+    card(s.lag == null ? "—" : int(s.lag), "worker lag (events)") +
+    card(int(s.pending), "unacknowledged events") +
+    card(int(t.lost), "telemetry events lost since gateway start", t.lost ? "warn" : "ok") +
+    card(p.age_s == null ? "—" : p.age_s + " s", "policy cache age", p.refresh_errors ? "warn" : "") +
+    card(int(w.late_events) , "late events dropped by worker");
+  if (w.status === "unknown") $("health").insertAdjacentHTML("beforeend", `<div class="note" style="grid-column:1/-1">${esc(w.detail)}</div>`);
+}
+
+function renderRequests(w, enforced) {
+  document.querySelectorAll(".winlabel").forEach((e) => e.textContent = w.seconds);
+  const o = w.outcomes, fr = w.upstream.failure_rate;
+  $("requests").innerHTML =
+    card(int(w.total), "total requests") +
+    card(int(o.allowed + o.bypassed), "allowed (forwarded)", "ok") +
+    card(int(o.limited), "rejected by token bucket (429)", o.limited ? "warn" : "") +
+    card(int(o.blocked), "rejected: client BLOCKED", o.blocked ? "bad" : "") +
+    card(fr == null ? "—" : (fr * 100).toFixed(1) + " %", "upstream 4xx rate (" + int(w.upstream.failures_4xx) + " of " + int(w.upstream.served) + ")") +
+    card(w.avg_rps, "avg requests / s") +
+    card(int(w.peak_per_second), "busiest second") +
+    card(int(w.active_clients), "active clients") +
+    card(int(enforced.MONITORED), "clients MONITORED", "MONITORED") +
+    card(int(enforced.THROTTLED), "clients THROTTLED", "THROTTLED") +
+    card(int(enforced.BLOCKED), "clients BLOCKED", "BLOCKED");
+  const extra = [];
+  if (o.bypassed) extra.push(int(o.bypassed) + " requests bypassed the limiter (Redis failure, fail-open)");
+  if (o.rejected) extra.push(int(o.rejected) + " rejected because the limiter was down (fail-closed)");
+  if (o.bad_gateway) extra.push(int(o.bad_gateway) + " got 502 (protected API unreachable)");
+  if (w.gap_events) extra.push(w.gap_events + " telemetry gap report(s): " + int(w.events_lost_reported) + " events were lost, totals are lower bounds");
+  if (w.truncated) extra.push("window truncated to the newest " + int(w.cap) + " events: totals are lower bounds");
+  $("reqnote").textContent = extra.join(" · ");
+  const chart = $("chart"); chart.innerHTML = "";
+  if (!w.series.length) { $("chartwrap").style.display = "none";
+    $("reqnote").textContent = "No requests in the last " + w.seconds + " s." + (extra.length ? " " + extra.join(" · ") : ""); return; }
+  $("chartwrap").style.display = "block";
+  const max = Math.max(...w.series.map((s) => s.total), 1);
+  for (const s of w.series) {
+    const col = document.createElement("div");
+    col.title = `window ${s.win}: ${s.total} requests, ${s.restricted} throttled/blocked, ${s.failures} upstream 4xx`;
+    const served = s.total - s.restricted;
+    col.innerHTML = `<i class="seg-ok" style="height:${(served / max * 70).toFixed(1)}px"></i><i class="seg-r" style="height:${(s.restricted / max * 70).toFixed(1)}px"></i>`;
+    chart.appendChild(col);
+  }
+}
+
+function renderClients(d) {
+  const t = $("clients");
+  $("clientsempty").style.display = d.clients.length ? "none" : "block";
+  t.style.display = d.clients.length ? "table" : "none";
+  t.innerHTML = d.clients.length ? `<tr><th>client</th><th>state</th><th>score</th><th>D</th><th>B</th><th>F (4xx rate)</th><th>C</th>
+    <th>req/s</th><th>peak/s</th><th>baseline</th><th>reqs / 4xx (span)</th><th>top endpoint</th><th>note</th></tr>` +
+    d.clients.map((c) => `<tr><td title="${esc(c.last_transition)}">${esc(c.client)}</td>
+      <td><span class="pill ${esc(c.state)}">${esc(c.state)}</span></td>
+      <td>${fmt(c.score, 1)}${c.status && c.status !== "scored" ? ' <span class="muted">(' + esc(c.status) + ")</span>" : ""}</td>
+      <td>${fmt(c.D)}</td><td>${fmt(c.B)}</td><td>${fmt(c.F)}</td><td>${fmt(c.C)}</td>
+      <td>${fmt(c.rate)}</td><td>${int(c.peak)}</td><td>${fmt(c.baseline)}</td>
+      <td>${int(c.n_requests)} / ${int(c.n_4xx)}</td><td>${esc(c.top_endpoint) || "—"}</td>
+      <td class="muted">${c.unavailable.length ? "unavailable: " + esc(c.unavailable.join(",")) : ""}</td></tr>`).join("") : "";
+  $("clientsnote").textContent = d.total_clients > d.returned ? `Showing ${d.returned} of ${d.total_clients} clients.` :
+    (d.clients.length ? `${d.total_clients} client(s). Hover a client id for its last state change.` : "");
+}
+
+function renderEvents(d) {
+  const t = $("events");
+  $("eventsempty").style.display = d.events.length ? "none" : "block";
+  t.style.display = d.events.length ? "table" : "none";
+  t.innerHTML = d.events.length ? `<tr><th>window</th><th>client</th><th>change</th><th>score</th><th>D</th><th>B</th><th>F</th><th>C</th><th>reason</th></tr>` +
+    d.events.map((e) => `<tr><td>${int(e.win)}</td><td>${esc(e.client)}</td>
+      <td><span class="pill ${esc(e.from)}">${esc(e.from)}</span> &rarr; <span class="pill ${esc(e.to)}">${esc(e.to)}</span></td>
+      <td>${fmt(e.score, 1)}</td><td>${fmt(e.D)}</td><td>${fmt(e.B)}</td><td>${fmt(e.F)}</td><td>${fmt(e.C)}</td>
+      <td class="muted">${esc(e.reason)}</td></tr>`).join("") : "";
+}
+
+async function refresh() {
+  try {
+    const [ov, cl, ev] = await Promise.all([api("/admin/overview?seconds=" + $("win").value),
+                                            api("/admin/clients?limit=50"), api("/admin/events?limit=30")]);
+    showApp(); banner(""); $("app").style.opacity = 1;
+    renderHealth(ov.health); renderRequests(ov.window, ov.enforced); renderClients(cl); renderEvents(ev);
+    lastOk = new Date(); $("updated").textContent = "updated " + lastOk.toLocaleTimeString();
+  } catch (e) {
+    if (e instanceof AuthError) { setToken(""); showLogin(e.message); return; }
+    $("app").style.opacity = 0.45;                       // dim old numbers so they are not mistaken for live ones
+    banner("Cannot refresh: " + e.message + (lastOk ? " (last good update " + lastOk.toLocaleTimeString() + ", showing older data)" : ""));
+    $("updated").textContent = "update failed";
+  }
+}
+
+function start() {
+  if (!getToken()) { showLogin(""); return; }
+  $("updated").textContent = "loading…";
+  refresh(); clearInterval(timer); timer = setInterval(refresh, 2000);
+}
+$("loginform").addEventListener("submit", (ev) => { ev.preventDefault(); setToken($("token").value.trim()); $("token").value = ""; start(); });
+$("signout").addEventListener("click", () => { setToken(""); showLogin("Token forgotten."); });
+$("win").addEventListener("change", refresh);
+start();
+</script>
+</body>
+</html>
